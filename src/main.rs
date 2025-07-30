@@ -4,6 +4,7 @@ use std::io::BufWriter;
 use serde_json::{Value, json};
 use std::process::Command;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use std::sync::mpsc::{self, Sender, Receiver};
 
 mod request;
 use crate::request::request;
@@ -19,11 +20,14 @@ fn main() -> eframe::Result<()>  {
         viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
         ..Default::default()
     };
+
+    let (tx, rx) = mpsc::channel();
+    
     let result = eframe::run_native(
         "ASSistant",
         options,
         Box::new(|_cc: &eframe::CreationContext<'_>| {
-            Ok(Box::new(MyAssistantApp {chat_history: json, user_input: String::new()}))
+            Ok(Box::new(MyAssistantApp {chat_history: json, user_input: String::new(), tx, rx, is_thinking: false}))
         })
     );
 
@@ -34,6 +38,9 @@ fn main() -> eframe::Result<()>  {
 struct MyAssistantApp {
     chat_history: serde_json::Value,
     user_input: String,
+    tx: Sender<Value>,
+    rx: Receiver<Value>,
+    is_thinking: bool,
 }
 
 impl Drop for MyAssistantApp {
@@ -51,7 +58,7 @@ impl Drop for MyAssistantApp {
 
 impl MyAssistantApp {
     fn display_chat(&mut self, ui: &mut egui::Ui) {
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             if let Some(messages) = self.chat_history["messages"].as_array() {
                 let mut cache = CommonMarkCache::default();
                 for i in messages {
@@ -73,6 +80,13 @@ impl MyAssistantApp {
                         continue;
                     }
                 }
+                if self.is_thinking {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                        ui.group(|ui| {
+                            ui.label("Thinking...");
+                        });
+                    });
+                }
             }
         });
     }
@@ -81,26 +95,25 @@ impl MyAssistantApp {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::multiline(&mut self.user_input));
                 if ui.button("send").clicked() {
+                    self.is_thinking = true;
                     if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
                         let new_message = json!({
                             "role": "user",
                             "content": self.user_input
                         });
-                        self.user_input = String::from("");
+                        self.user_input.clear();
                         messages.push(new_message);
                     }
-                    let buffer = request(&mut self.chat_history).expect("Request failed..."); 
 
-                    if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
-                        // Create new message object from buffer
-                        let res_message = json!({
-                            "role": buffer["choices"][0]["message"]["role"],
-                            "content": buffer["choices"][0]["message"]["content"]
-                        });
+                    let mut chat_history_clone = self.chat_history.clone();
+                    let tx = self.tx.clone(); // safe because set in main()
 
-                        // Append new message
-                        messages.push(res_message);
-                    }
+                    std::thread::spawn(move || {
+                        let response = request(&mut chat_history_clone);
+                        if let Ok(buffer) = response {
+                            let _ = tx.send(buffer); // send the buffer back to main thread
+                        }
+                    });
                 }
             });
         });
@@ -115,5 +128,20 @@ impl eframe::App for MyAssistantApp {
         egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
             self.display_chat(ui); 
         });
+
+        // Check for any new assistant response
+        if let Ok(buffer) = self.rx.try_recv() {
+            self.is_thinking = false;
+            if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
+                let res_message = json!({
+                    "role": buffer["choices"][0]["message"]["role"],
+                    "content": buffer["choices"][0]["message"]["content"]
+                });
+                messages.push(res_message);
+            }
+        }
+
+        // Tell egui to repaint periodically to keep UI responsive
+        ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
