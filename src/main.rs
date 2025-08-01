@@ -1,9 +1,14 @@
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use egui_file::FileDialog;
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf}
+};
 use std::fs::{File, OpenOptions};
 use std::io::BufWriter;
 use serde_json::{Value, json};
-use std::process::Command;
-use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+use std::process::{Child, Command};
 use std::sync::mpsc::{self, Sender, Receiver};
 
 mod request;
@@ -12,24 +17,6 @@ use crate::request::request;
 fn main() -> eframe::Result<()>  {
     let file = File::open("chat_history.json").expect("file not found!");
     let json: serde_json::Value = serde_json::from_reader(file).expect("file should be proper JSON");
-
-    let home = std::env::var("HOME").expect("HOME environment variable not set");
-    let model_path = format!("{}/llm/gemma-3-4b-it-q4_k_m.gguf", home);
-
-    let child = Command::new("llama-server")
-        .arg("-m")
-        .arg(&model_path)
-        .arg("--port")
-        .arg("8080")
-        .spawn();
-    let mut child = match child {
-        Ok(child) => child,
-        Err(e) => {
-            eprintln!("Failed to start llama-server: {}", e);
-            // Decide: exit or continue without server
-            std::process::exit(1);
-        }
-    };
 
     let options = eframe::NativeOptions{
         viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
@@ -43,30 +30,56 @@ fn main() -> eframe::Result<()>  {
         options,
         Box::new(|_cc: &eframe::CreationContext<'_>| {
             Ok(Box::new(MyAssistantApp {
+                select_file: SelectFile::default(),
+                state: AppState::ChooseFile,
                 chat_history: json, 
                 user_input: String::new(),
                 tx, rx,
                 is_thinking: false,
-                commonmark_cache: CommonMarkCache::default()
+                commonmark_cache: CommonMarkCache::default(),
+                child_process: None
             }))
         })
     );
 
-    let _ = child.kill(); // stop the llama-server
     result
 }
 
+enum AppState {
+    ChooseFile,
+    Running,
+}
+
+#[derive(Default)]
+struct SelectFile {
+    opened_file: Option<PathBuf>,
+    open_file_dialog: Option<FileDialog>,
+}
+
 struct MyAssistantApp {
+    select_file: SelectFile,
+    state: AppState,
     chat_history: serde_json::Value,
     user_input: String,
     tx: Sender<Value>,
     rx: Receiver<Value>,
     is_thinking: bool,
     commonmark_cache: CommonMarkCache,
+    child_process: Option<Child>,
 }
 
 impl Drop for MyAssistantApp {
     fn drop(&mut self) {
+        if let Some(mut child) = self.child_process.take() {
+            // Try to kill it gracefully
+            if let Err(e) = child.kill() {
+                eprintln!("Failed to kill child process: {}", e);
+            } else {
+                let _ = child.wait(); // Wait for it to exit
+            }
+        }
+        println!("Successfully stop llama-server");
+
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -151,26 +164,74 @@ impl MyAssistantApp {
 
 impl eframe::App for MyAssistantApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::bottom("input_holder").show(ctx, |ui| {
-            self.chat_input(ui);
-        });
-        egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
-            self.display_chat(ui); 
-        });
+        match self.state {
+            AppState::ChooseFile => {
+                egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(300.0);
+                        ui.label("Import .gguf");
+                        ui.add_space(10.0);
+                        if ui.button("import").clicked() {
+                            let filter = Box::new({
+                                let ext = Some(OsStr::new("gguf"));
+                                move |path: &Path| -> bool {path.extension() == ext}
+                            });
+                            let mut dialog = FileDialog::open_file(self.select_file.opened_file.clone()).show_files_filter(filter);
+                            dialog.open();
+                            self.select_file.open_file_dialog = Some(dialog);
+                        }
+                        if let Some(dialog) = &mut self.select_file.open_file_dialog {
+                            if dialog.show(ctx).selected() {
+                                if let Some(file) = dialog.path() {
+                                    self.select_file.opened_file = Some(file.to_path_buf());
 
-        // Check for any new assistant response
-        if let Ok(buffer) = self.rx.try_recv() {
-            self.is_thinking = false;
-            if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
-                let res_message = json!({
-                    "role": buffer["choices"][0]["message"]["role"],
-                    "content": buffer["choices"][0]["message"]["content"]
+                                    let model_path = self.select_file.opened_file.clone().expect("some").display().to_string();
+                                    let child = Command::new("llama-server")
+                                        .arg("-m")
+                                        .arg(&model_path)
+                                        .arg("--port")
+                                        .arg("8080")
+                                        .spawn();
+                                    match child {
+                                        Ok(child) => {
+                                            self.child_process = Some(child);
+                                            self.state = AppState::Running;
+                                        },
+                                        Err(e) => {
+                                            eprintln!("Failed to start llama-server: {}", e);
+                                            // Decide: exit or continue without server
+                                            std::process::exit(1);
+                                        }
+                                    };
+                                }
+                            }
+                        }
+                    });
                 });
-                messages.push(res_message);
+            },
+            AppState::Running => {
+                egui::TopBottomPanel::bottom("input_holder").show(ctx, |ui| {
+                    self.chat_input(ui);
+                });
+                egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
+                    self.display_chat(ui); 
+                });
+
+                // Check for any new assistant response
+                if let Ok(buffer) = self.rx.try_recv() {
+                    self.is_thinking = false;
+                    if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
+                        let res_message = json!({
+                            "role": buffer["choices"][0]["message"]["role"],
+                            "content": buffer["choices"][0]["message"]["content"]
+                        });
+                        messages.push(res_message);
+                    }
+                }
             }
         }
 
         // Tell egui to repaint periodically to keep UI responsive
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        //ctx.request_repaint_after(std::time::Duration::from_millis(100));
     }
 }
