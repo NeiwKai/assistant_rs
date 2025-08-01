@@ -208,6 +208,7 @@ dependencies = [
  "eframe",
  "egui",
  "egui_commonmark",
+ "egui_file",
  "reqwest",
  "serde_json",
  "tokio",
@@ -755,6 +756,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
 name = "ecolor"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -894,6 +901,16 @@ dependencies = [
  "log",
  "mime_guess2",
  "profiling",
+]
+
+[[package]]
+name = "egui_file"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cd34f5785805b134a7f7a739140cee3af03e36022639348952024b136a19790d"
+dependencies = [
+ "dyn-clone",
+ "egui",
 ]
 
 [[package]]
