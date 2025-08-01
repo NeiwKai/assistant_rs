@@ -13,8 +13,23 @@ fn main() -> eframe::Result<()>  {
     let file = File::open("chat_history.json").expect("file not found!");
     let json: serde_json::Value = serde_json::from_reader(file).expect("file should be proper JSON");
 
-    let model_path: String = String::from("$HOME/llm/gemma-3-4b-it-q4_k_m.gguf");
-    let mut child = Command::new("sh").arg("-c").arg(format!("llama-server -m {} --port 8080", model_path)).spawn().expect("Might be invalid path!");
+    let home = std::env::var("HOME").expect("HOME environment variable not set");
+    let model_path = format!("{}/llm/gemma-3-4b-it-q4_k_m.gguf", home);
+
+    let child = Command::new("llama-server")
+        .arg("-m")
+        .arg(&model_path)
+        .arg("--port")
+        .arg("8080")
+        .spawn();
+    let mut child = match child {
+        Ok(child) => child,
+        Err(e) => {
+            eprintln!("Failed to start llama-server: {}", e);
+            // Decide: exit or continue without server
+            std::process::exit(1);
+        }
+    };
 
     let options = eframe::NativeOptions{
         viewport: egui::ViewportBuilder::default().with_inner_size([600.0, 800.0]),
@@ -27,7 +42,13 @@ fn main() -> eframe::Result<()>  {
         "ASSistant",
         options,
         Box::new(|_cc: &eframe::CreationContext<'_>| {
-            Ok(Box::new(MyAssistantApp {chat_history: json, user_input: String::new(), tx, rx, is_thinking: false}))
+            Ok(Box::new(MyAssistantApp {
+                chat_history: json, 
+                user_input: String::new(),
+                tx, rx,
+                is_thinking: false,
+                commonmark_cache: CommonMarkCache::default()
+            }))
         })
     );
 
@@ -41,6 +62,7 @@ struct MyAssistantApp {
     tx: Sender<Value>,
     rx: Receiver<Value>,
     is_thinking: bool,
+    commonmark_cache: CommonMarkCache,
 }
 
 impl Drop for MyAssistantApp {
@@ -60,19 +82,28 @@ impl MyAssistantApp {
     fn display_chat(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             if let Some(messages) = self.chat_history["messages"].as_array() {
-                let mut cache = CommonMarkCache::default();
                 for i in messages {
                     if i["role"] != "system" { 
                         if i["role"] != "user" {
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                                 ui.group(|ui| {
-                                    CommonMarkViewer::new().show(ui, &mut cache, i["content"].as_str().unwrap());
+                                    if let Some(content) = i["content"].as_str() {
+                                        CommonMarkViewer::new().show(ui, &mut self.commonmark_cache, content);
+                                    } else {
+                                        ui.label("<missing content>");
+                                    }
+                                    //CommonMarkViewer::new().show(ui, &mut cache, i["content"].as_str().unwrap());
                                 });
                             });
                         } else {
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                                 ui.group(|ui| {
-                                    ui.label(format!("{}", i["content"].as_str().unwrap()));
+                                    if let Some(content) = i["content"].as_str() {
+                                        ui.label(content);
+                                    } else {
+                                        ui.label("<missing content>");
+                                    }
+                                    //ui.label(format!("{}", i["content"].as_str().unwrap()));
                                 });
                             });
                         }
@@ -91,31 +122,29 @@ impl MyAssistantApp {
         });
     }
     fn chat_input(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::multiline(&mut self.user_input));
-                if ui.button("send").clicked() {
-                    self.is_thinking = true;
-                    if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
-                        let new_message = json!({
-                            "role": "user",
-                            "content": self.user_input
-                        });
-                        self.user_input.clear();
-                        messages.push(new_message);
-                    }
-
-                    let mut chat_history_clone = self.chat_history.clone();
-                    let tx = self.tx.clone(); // safe because set in main()
-
-                    std::thread::spawn(move || {
-                        let response = request(&mut chat_history_clone);
-                        if let Ok(buffer) = response {
-                            let _ = tx.send(buffer); // send the buffer back to main thread
-                        }
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            ui.add(egui::TextEdit::multiline(&mut self.user_input));
+            if ui.button("send").clicked() {
+                self.is_thinking = true;
+                if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
+                    let new_message = json!({
+                        "role": "user",
+                        "content": self.user_input
                     });
+                    self.user_input.clear();
+                    messages.push(new_message);
                 }
-            });
+
+                let mut chat_history_clone = self.chat_history.clone();
+                let tx = self.tx.clone(); // safe because set in main()
+
+                std::thread::spawn(move || {
+                    let response = request(&mut chat_history_clone);
+                    if let Ok(buffer) = response {
+                        let _ = tx.send(buffer); // send the buffer back to main thread
+                    }
+                });
+            }
         });
     }
 }
