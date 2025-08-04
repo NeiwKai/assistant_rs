@@ -222,6 +222,8 @@ impl MyAssistantApp {
             ui.add(egui::TextEdit::multiline(&mut self.user_input));
             if ui.button("send").clicked() {
                 self.is_thinking = true;
+
+                // Add the new user message to chat history
                 if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
                     let new_message = json!({
                         "role": "user",
@@ -231,26 +233,42 @@ impl MyAssistantApp {
                     messages.push(new_message);
                 }
 
-                //let mut chat_history_clone = self.chat_history.clone();
-                let mut chat_history_clone = json!({
-                    "messages": self.chat_history["messages"]
-                        .as_array()
-                        .unwrap_or(&vec![])
-                        .iter()
-                        .rev() // from end to start
-                        .take(10) // adjust as needed
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .into_iter()
-                        .rev() // restore original order
-                        .collect::<Vec<_>>()
-                });
+                // Prepare the messages to send: first (system) + last 10
+                let messages_fallback = Vec::new();
+                let all_messages = self.chat_history["messages"]
+                    .as_array()
+                    .unwrap_or(&messages_fallback);
+
+                let mut selected_messages = Vec::new();
+
+                // Always include the system prompt if present
+                if let Some(first_msg) = all_messages.first() {
+                    selected_messages.push(first_msg.clone());
+                }
+
+                // Take the last 10 messages (after the first)
+                let last_10 = all_messages
+                    .iter()
+                    .skip(1) // skip system message
+                    .rev()
+                    .take(10)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>();
+
+                selected_messages.extend(last_10);
+
+                let mut chat_history_clone = json!({ "messages": selected_messages });
+
                 let tx = self.tx.clone(); // safe because set in main()
 
+                // Background request
                 std::thread::spawn(move || {
                     let response = request(&mut chat_history_clone);
                     if let Ok(buffer) = response {
-                        let _ = tx.send(buffer); // send the buffer back to main thread
+                        let _ = tx.send(buffer); // send back to main thread
                     }
                 });
             }
