@@ -10,6 +10,7 @@ use std::io::BufWriter;
 use serde_json::{Value, json};
 use std::process::{Child, Command};
 use std::sync::mpsc::{self, Sender, Receiver};
+use std::time::{Instant, Duration};
 
 mod request;
 use crate::request::request;
@@ -28,7 +29,23 @@ fn main() -> eframe::Result<()>  {
     let result = eframe::run_native(
         "ASSistant",
         options,
-        Box::new(|_cc: &eframe::CreationContext<'_>| {
+        Box::new(|cc: &eframe::CreationContext<'_>| {
+            // Load and setup emoji font here:
+            let mut fonts = egui::FontDefinitions::default();
+
+            // Add NotoColorEmoji.ttf font (adjust path as needed)
+            fonts.font_data.insert(
+                "NotoEmoji".to_owned(),
+                egui::FontData::from_static(include_bytes!("../NotoColorEmoji.ttf")).into(),
+            );
+
+            // Insert emoji font as highest priority fallback for proportional family
+            fonts.families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push("NotoEmoji".to_owned());
+
+            cc.egui_ctx.set_fonts(fonts);
             Ok(Box::new(MyAssistantApp {
                 select_file: SelectFile::default(),
                 state: AppState::ChooseFile,
@@ -37,12 +54,54 @@ fn main() -> eframe::Result<()>  {
                 tx, rx,
                 is_thinking: false,
                 commonmark_cache: CommonMarkCache::default(),
-                child_process: None
+                child_process: None,
+                animated_assistant_msg: None,
             }))
         })
     );
 
     result
+}
+
+struct AnimatedMessage {
+    full_text: String,
+    visible_text: String,
+    index: usize,
+    last_update: Instant,
+    finished: bool
+}
+
+impl AnimatedMessage {
+    fn new(full_text: String) -> Self {
+        Self {
+            full_text,
+            visible_text: String::new(),
+            index: 0,
+            last_update: Instant::now(),
+            finished: false,
+        }
+    }
+
+    fn update(&mut self) {
+        if self.finished {
+            return;
+        }
+
+        let now = Instant::now();
+        if now.duration_since(self.last_update) > Duration::from_millis(20) {
+            self.index += 1;
+
+            // Use char indexing safely:
+            if self.index >= self.full_text.chars().count() {
+                self.visible_text = self.full_text.clone();
+                self.finished = true;
+            } else {
+                self.visible_text = self.full_text.chars().take(self.index).collect();
+            }
+
+            self.last_update = now;
+        }
+    }
 }
 
 enum AppState {
@@ -66,6 +125,8 @@ struct MyAssistantApp {
     is_thinking: bool,
     commonmark_cache: CommonMarkCache,
     child_process: Option<Child>,
+    animated_assistant_msg: Option<AnimatedMessage>,
+
 }
 
 impl Drop for MyAssistantApp {
@@ -94,43 +155,65 @@ impl Drop for MyAssistantApp {
 impl MyAssistantApp {
     fn display_chat(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+            // 1. Show chat history
             if let Some(messages) = self.chat_history["messages"].as_array() {
-                for i in messages {
-                    if i["role"] != "system" { 
-                        if i["role"] != "user" {
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                                ui.group(|ui| {
-                                    if let Some(content) = i["content"].as_str() {
-                                        CommonMarkViewer::new().show(ui, &mut self.commonmark_cache, content);
-                                    } else {
-                                        ui.label("<missing content>");
-                                    }
-                                    //CommonMarkViewer::new().show(ui, &mut cache, i["content"].as_str().unwrap());
-                                });
-                            });
-                        } else {
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                                ui.group(|ui| {
-                                    if let Some(content) = i["content"].as_str() {
-                                        ui.label(content);
-                                    } else {
-                                        ui.label("<missing content>");
-                                    }
-                                    //ui.label(format!("{}", i["content"].as_str().unwrap()));
-                                });
-                            });
-                        }
-                    } else {
+                for msg in messages {
+                    if msg["role"] == "system" {
                         continue;
                     }
+
+                    let content = msg["content"].as_str().unwrap_or("<missing content>");
+                    let role = msg["role"].as_str().unwrap_or("unknown");
+
+                    ui.with_layout(
+                        if role == "user" {
+                            egui::Layout::right_to_left(egui::Align::TOP)
+                        } else {
+                            egui::Layout::left_to_right(egui::Align::TOP)
+                        },
+                        |ui| {
+                            ui.group(|ui| {
+                                if role == "user" {
+                                    ui.label(content);
+                                } else {
+                                    CommonMarkViewer::new()
+                                        .show(ui, &mut self.commonmark_cache, content);
+                                }
+                            });
+                        },
+                    );
                 }
-                if self.is_thinking {
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                        ui.group(|ui| {
-                            ui.label("Thinking...");
-                        });
+            }
+
+            // 2. Show typing animation (if exists)
+            if let Some(anim) = &mut self.animated_assistant_msg {
+                anim.update();
+
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                    ui.group(|ui| {
+                        CommonMarkViewer::new()
+                            .show(ui, &mut self.commonmark_cache, &anim.visible_text);
                     });
+                });
+
+
+                if anim.finished {
+                    // Move to permanent chat history
+                    if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
+                        let res_message = json!({
+                            "role": "assistant",
+                            "content": anim.full_text
+                        });
+                        messages.push(res_message);
+                    }
+                    self.animated_assistant_msg = None;
                 }
+            } else if self.is_thinking {
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                    ui.group(|ui| {
+                        ui.label("Thinking...");
+                    });
+                });
             }
         });
     }
@@ -148,7 +231,20 @@ impl MyAssistantApp {
                     messages.push(new_message);
                 }
 
-                let mut chat_history_clone = self.chat_history.clone();
+                //let mut chat_history_clone = self.chat_history.clone();
+                let mut chat_history_clone = json!({
+                    "messages": self.chat_history["messages"]
+                        .as_array()
+                        .unwrap_or(&vec![])
+                        .iter()
+                        .rev() // from end to start
+                        .take(10) // adjust as needed
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .into_iter()
+                        .rev() // restore original order
+                        .collect::<Vec<_>>()
+                });
                 let tx = self.tx.clone(); // safe because set in main()
 
                 std::thread::spawn(move || {
@@ -220,18 +316,19 @@ impl eframe::App for MyAssistantApp {
                 // Check for any new assistant response
                 if let Ok(buffer) = self.rx.try_recv() {
                     self.is_thinking = false;
-                    if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
-                        let res_message = json!({
-                            "role": buffer["choices"][0]["message"]["role"],
-                            "content": buffer["choices"][0]["message"]["content"]
-                        });
-                        messages.push(res_message);
+
+                    match buffer["choices"][0]["message"]["content"].as_str() {
+                        Some(full_text) => {
+                            //println!("Received assistant response: {}", full_text);
+                            self.animated_assistant_msg = Some(AnimatedMessage::new(full_text.to_string()));
+                        }
+                        None => {
+                            println!("ERROR: Invalid response from model:\n{:#?}", buffer);
+                        }
                     }
                 }
             }
         }
-
-        // Tell egui to repaint periodically to keep UI responsive
-        //ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint();
     }
 }
