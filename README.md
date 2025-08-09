@@ -24,6 +24,6 @@
 ```
 ## Future Roadmap 
 * web browsing ability
-* file upload like .pdf, .txt
+* file upload like `.pdf`, `.txt`
 * text-to-speech
 * chatbot avatar
