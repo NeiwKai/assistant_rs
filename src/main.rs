@@ -56,6 +56,7 @@ fn main() -> eframe::Result<()>  {
                 commonmark_cache: CommonMarkCache::default(),
                 child_process: None,
                 animated_assistant_msg: None,
+                can_send: true,
             }))
         })
     );
@@ -126,6 +127,7 @@ struct MyAssistantApp {
     commonmark_cache: CommonMarkCache,
     child_process: Option<Child>,
     animated_assistant_msg: Option<AnimatedMessage>,
+    can_send: bool,
 
 }
 
@@ -207,6 +209,7 @@ impl MyAssistantApp {
                         messages.push(res_message);
                     }
                     self.animated_assistant_msg = None;
+                    self.can_send = true;
                 }
             } else if self.is_thinking {
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
@@ -220,8 +223,9 @@ impl MyAssistantApp {
     fn chat_input(&mut self, ui: &mut egui::Ui) {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             ui.add(egui::TextEdit::multiline(&mut self.user_input));
-            if ui.button("send").clicked() {
+            if ui.button("send").clicked() && self.can_send {
                 self.is_thinking = true;
+                self.can_send = false;
 
                 // Add the new user message to chat history
                 if let Some(Value::Array(messages)) = self.chat_history.get_mut("messages") {
