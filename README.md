@@ -1,6 +1,13 @@
 ## Install with cargo 
 `cargo install --git https://github.com/NeiwKai/assistant_rs` </br></br>
 
+### Support OS
+|OS       | Test Result |
+|---------|-------------|
+|Linux    |      Y      |
+|MacOs    |      Y      |
+|Window   |      ?      |
+
 *Please make sure that you run the command in the same directory as `chat_history.json`* </br>
 *Then get a .gguf model file from <a href="https://huggingface.co/">hugging face</a>*
 
