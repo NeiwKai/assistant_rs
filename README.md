@@ -9,7 +9,7 @@
 |Window   |      ?      |
 
 *Please make sure that you run the command in the same directory as `chat_history.json`* </br>
-*Then get a .gguf model file from <a href="https://huggingface.co/">hugging face</a>*
+*Then get a `.gguf` model file from <a href="https://huggingface.co/">hugging face</a>*
 
 ### Example of `chat_history.json` </br>
 ```
