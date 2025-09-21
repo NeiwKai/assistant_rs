@@ -1,19 +1,13 @@
-use rand::{seq::SliceRandom, thread_rng, Rng};
+use rand::{rng, Rng};
 use rand::prelude::IndexedRandom;
 use reqwest::Client;
 use scraper::{Html, Selector};
 use std::{error::Error, time::Duration};
 use tokio::time::sleep;
 
-pub async fn duckduckgo_search(query: &str) -> Result<Vec<String>, Box<dyn Error>> {
-    let user_agents = vec![
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_4_0) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-        "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/117.0",
-    ];
-
+pub async fn duckduckgo_search(query: &str, user_agents: &Vec<&str>) -> Result<Vec<String>, Box<dyn Error>> {
     let url = format!("https://duckduckgo.com/html/?q={}", query.replace(" ", "+"));
-    let ua = user_agents.choose(&mut thread_rng()).unwrap();
+    let ua = user_agents.choose(&mut rng()).unwrap();
 
     let client = Client::builder()
         .user_agent(*ua)
@@ -28,7 +22,7 @@ pub async fn duckduckgo_search(query: &str) -> Result<Vec<String>, Box<dyn Error
     let body = resp.text().await?;
 
     // Simulate human delay
-    let delay = thread_rng().gen_range(2..=5);
+    let delay = rng().random_range(2..=5);
     sleep(Duration::from_secs(delay)).await;
 
     let doc = Html::parse_document(&body);
