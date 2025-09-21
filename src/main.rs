@@ -155,6 +155,48 @@ impl Drop for MyAssistantApp {
 }
 
 impl MyAssistantApp {
+    fn choose_file(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(300.0);
+            ui.label("Import .gguf");
+            ui.add_space(10.0);
+            if ui.button("import").clicked() {
+                let filter = Box::new({
+                    let ext = Some(OsStr::new("gguf"));
+                    move |path: &Path| -> bool {path.extension() == ext}
+                });
+                let mut dialog = FileDialog::open_file(self.select_file.opened_file.clone()).show_files_filter(filter);
+                dialog.open();
+                self.select_file.open_file_dialog = Some(dialog);
+            }
+            if let Some(dialog) = &mut self.select_file.open_file_dialog {
+                if dialog.show(ctx).selected() {
+                    if let Some(file) = dialog.path() {
+                        self.select_file.opened_file = Some(file.to_path_buf());
+
+                        let model_path = self.select_file.opened_file.clone().expect("some").display().to_string();
+                        let child = Command::new("llama-server")
+                            .arg("-m")
+                            .arg(&model_path)
+                            .arg("--port")
+                            .arg("8080")
+                            .spawn();
+                        match child {
+                            Ok(child) => {
+                                self.child_process = Some(child);
+                                self.state = AppState::Running;
+                            },
+                            Err(e) => {
+                                eprintln!("Failed to start llama-server: {}", e);
+                                // Decide: exit or continue without server
+                                std::process::exit(1);
+                            }
+                        };
+                    }
+                }
+            }
+        });
+    }
     fn display_chat(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
             // 1. Show chat history
@@ -293,46 +335,7 @@ impl eframe::App for MyAssistantApp {
         match self.state {
             AppState::ChooseFile => {
                 egui::CentralPanel::default().show(ctx, |ui: &mut egui::Ui| {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(300.0);
-                        ui.label("Import .gguf");
-                        ui.add_space(10.0);
-                        if ui.button("import").clicked() {
-                            let filter = Box::new({
-                                let ext = Some(OsStr::new("gguf"));
-                                move |path: &Path| -> bool {path.extension() == ext}
-                            });
-                            let mut dialog = FileDialog::open_file(self.select_file.opened_file.clone()).show_files_filter(filter);
-                            dialog.open();
-                            self.select_file.open_file_dialog = Some(dialog);
-                        }
-                        if let Some(dialog) = &mut self.select_file.open_file_dialog {
-                            if dialog.show(ctx).selected() {
-                                if let Some(file) = dialog.path() {
-                                    self.select_file.opened_file = Some(file.to_path_buf());
-
-                                    let model_path = self.select_file.opened_file.clone().expect("some").display().to_string();
-                                    let child = Command::new("llama-server")
-                                        .arg("-m")
-                                        .arg(&model_path)
-                                        .arg("--port")
-                                        .arg("8080")
-                                        .spawn();
-                                    match child {
-                                        Ok(child) => {
-                                            self.child_process = Some(child);
-                                            self.state = AppState::Running;
-                                        },
-                                        Err(e) => {
-                                            eprintln!("Failed to start llama-server: {}", e);
-                                            // Decide: exit or continue without server
-                                            std::process::exit(1);
-                                        }
-                                    };
-                                }
-                            }
-                        }
-                    });
+                    self.choose_file(ctx, ui);
                 });
             },
             AppState::Running => {
